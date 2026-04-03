@@ -72,7 +72,7 @@ YOUR ASSIGNED SECTION:
 
 {search_lang_instruction}
 
-Generate 1-2 search queries to find evidence for this section from YOUR perspective.
+Generate 1-{max_queries} search queries to find evidence for this section from YOUR perspective.
 Focus on open questions if available. Don't repeat searches already reflected in the draft.
 
 Return ONLY JSON:
@@ -306,6 +306,74 @@ Write a conclusion that:
 - Ends with a striking image, question, or forward-looking thought
 
 Output ONLY the conclusion text — no JSON, no title, no wrappers."""
+
+
+# ── Review ──────────────────────────────────────────────────────────
+
+REVIEW_ARTICLE = """You are a rigorous editor reviewing a long-form research article.
+Your job is to find problems, NOT to praise. Be specific and actionable.
+
+Topic: {topic}
+
+STYLE REQUIREMENTS:
+Tone: {style_tone}
+Techniques: {style_techniques}
+
+{anti_patterns}
+
+FULL ARTICLE:
+{article_text}
+
+Review each section. For each, choose an action:
+- "ok" — section is solid, no changes needed
+- "rewrite" — section has significant issues, needs rewriting
+- "cut" — section is redundant or adds nothing
+
+For "rewrite", explain SPECIFICALLY what's wrong and what to fix.
+Focus on: factual gaps, weak arguments, anti-pattern violations,
+flow problems, redundancy with other sections, unsupported claims.
+
+{output_lang_instruction}
+
+Return ONLY JSON:
+{{"sections": [
+  {{"title": "Section Name", "action": "ok"}},
+  {{"title": "Section Name", "action": "rewrite", "critique": "specific issues and what to fix"}},
+  {{"title": "Section Name", "action": "cut"}}
+]}}"""
+
+PATCH_SECTION = """You are rewriting a section based on editorial feedback.
+
+NARRATIVE THREAD: {narrative_thread}
+
+STYLE:
+Techniques: {style_techniques}
+Tone: {style_tone}
+
+{anti_patterns}
+
+{prose_techniques}
+
+SECTION: {section_name}
+
+CURRENT TEXT:
+{current_text}
+
+EDITOR'S CRITIQUE:
+{critique}
+
+SOURCES (cite as [N] inline):
+{sources}
+
+{prev_section_context}
+
+TARGET LENGTH: ~{target_words} words.
+
+{output_lang_instruction}
+
+Rewrite the section addressing ALL points in the critique.
+Keep citations [N] and good parts of the original. Fix the problems.
+Output ONLY the rewritten section text — no JSON, no title, no wrappers."""
 
 
 # ── Source filtering ─────────────────────────────────────────────────

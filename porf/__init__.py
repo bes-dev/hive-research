@@ -13,6 +13,7 @@ Example:
 
 from .core import research, PROFILES, STYLES
 from .encoder import Encoder
+from .fetcher import enrich_sources
 from .mind_map import MindMap, MindMapNode, Snippet, normalize_url
 from .types import Report, Section, Source
 from .search import (
@@ -30,6 +31,7 @@ __all__ = [
     "PROFILES",
     "STYLES",
     "Encoder",
+    "enrich_sources",
     "MindMap",
     "MindMapNode",
     "Snippet",

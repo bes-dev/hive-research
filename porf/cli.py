@@ -193,6 +193,8 @@ def main():
     parser.add_argument("-p", "--profile", choices=list(PROFILES.keys()), default="balanced")
     parser.add_argument("-t", "--style", choices=list(STYLES.keys()), default="analytical")
     parser.add_argument("-m", "--model", default="anthropic/claude-sonnet-4-20250514")
+    parser.add_argument("--model-fast", help="Fast/cheap model for queries and filtering")
+    parser.add_argument("--model-review", help="Strong model for review phase")
     parser.add_argument("-s", "--search", default="duckduckgo",
                         choices=["duckduckgo", "tavily", "brave", "serper", "searxng"])
     parser.add_argument("-l", "--lang", default="auto", help="Search language(s): auto, en, ru, or en,ru")
@@ -213,10 +215,15 @@ def main():
             sys.exit(1)
         config = wizard_mode(console)
     else:
+        model = args.model
+        if args.model_fast or args.model_review:
+            model = {"default": args.model,
+                     "fast": args.model_fast or args.model,
+                     "review": args.model_review or args.model}
         config = {
             "topic": args.topic, "profile": args.profile, "style": args.style,
             "languages": _parse_languages(args.lang), "output_language": args.out_lang,
-            "search": args.search, "model": args.model,
+            "search": args.search, "model": model,
             "api_base": args.api_base, "target_words": args.words,
             "save_trace": not args.no_trace,
         }
@@ -224,7 +231,9 @@ def main():
     if console:
         console.print()
         console.print(Panel.fit(f"[bold]{config['topic']}[/]", title="[bold cyan]PORF[/]", border_style="cyan"))
-        info = f"Profile: {config['profile']} | Style: {config.get('style', 'analytical')} | Model: {config['model']}"
+        m = config['model']
+        model_str = m if isinstance(m, str) else f"{m.get('default', '?')} (fast={m.get('fast', '-')}, review={m.get('review', '-')})"
+        info = f"Profile: {config['profile']} | Style: {config.get('style', 'analytical')} | Model: {model_str}"
         console.print(f"[dim]{info}[/]\n")
 
     report = run_research(config, console)

@@ -15,6 +15,7 @@ litellm.suppress_debug_info = True
 
 from . import prompts as _prompts_module
 from .encoder import Encoder, cosine_similarity
+from .fetcher import enrich_sources
 from .mind_map import MindMap, MindMapNode, Snippet, normalize_url
 from .search import SearchEngine, get_search_engine
 from .types import Report, Section, Source
@@ -22,6 +23,25 @@ from .types import Report, Section, Source
 # ── Utilities ────────────────────────────────────────────────────────────
 
 LLM = Callable[..., str]
+
+
+def _resolve_models(model: str | dict) -> dict[str, str]:
+    """Normalize model spec into {default, fast, review} dict."""
+    if isinstance(model, str):
+        return {"default": model, "fast": model, "review": model}
+    default = model.get("default", "anthropic/claude-sonnet-4-20250514")
+    return {
+        "default": default,
+        "fast": model.get("fast", default),
+        "review": model.get("review", default),
+    }
+
+
+def _make_llm(model: str, api_base: str | None, usage: dict,
+              lock: threading.Lock, trace: list | None) -> LLM:
+    return partial(_llm_call, model, api_base=api_base,
+                   _usage=usage, _usage_lock=lock,
+                   _trace=trace, _trace_lock=lock)
 
 
 def _llm_call(model: str, prompt: str, api_base: str | None = None,
@@ -198,16 +218,19 @@ PROFILES = {
         "n_perspectives": 3, "max_rounds": 10,
         "max_results": 3, "max_queries": 2,
         "lock_sources": 5, "target_words": 2000,
+        "review_cycles": 0,
     },
     "balanced": {
         "n_perspectives": 4, "max_rounds": 15,
         "max_results": 5, "max_queries": 2,
         "lock_sources": 8, "target_words": 4000,
+        "review_cycles": 1,
     },
     "deep": {
         "n_perspectives": 5, "max_rounds": 20,
-        "max_results": 5, "max_queries": 2,
+        "max_results": 8, "max_queries": 3,
         "lock_sources": 12, "target_words": 6000,
+        "review_cycles": 2,
     },
 }
 
@@ -469,9 +492,22 @@ def _assign_section(mm: MindMap, locked_nodes: set[MindMapNode]) -> MindMapNode 
     return min(candidates, key=lambda n: len(n.snippet_uuids))
 
 
+def _unique_domains(mm: MindMap, node: MindMapNode) -> int:
+    """Count unique domains among a node's snippets."""
+    from urllib.parse import urlparse
+    domains: set[str] = set()
+    for uid in node.snippet_uuids:
+        if uid in mm.snippets:
+            host = (urlparse(mm.snippets[uid].source.url).hostname or '').removeprefix('www.')
+            if host:
+                domains.add(host)
+    return len(domains)
+
+
 def _check_convergence(mm: MindMap, lock_threshold: int,
                        locked_nodes: set[MindMapNode]) -> set[MindMapNode]:
-    """Auto-lock leaves that have enough sources AND a draft."""
+    """Auto-lock leaves that have enough sources from diverse domains AND a draft."""
+    min_domains = 3
     for leaf in mm.root.leaves():
         if leaf in locked_nodes:
             continue
@@ -482,7 +518,9 @@ def _check_convergence(mm: MindMap, lock_threshold: int,
             depth += 1
             node = node.parent
         threshold = max(3, lock_threshold // depth) if depth > 1 else lock_threshold
-        if leaf.draft and len(leaf.snippet_uuids) >= threshold:
+        if not leaf.draft or len(leaf.snippet_uuids) < threshold:
+            continue
+        if _unique_domains(mm, leaf) >= min(min_domains, threshold):
             locked_nodes.add(leaf)
     return locked_nodes
 
@@ -510,8 +548,8 @@ def _section_outline(mm: MindMap, locked_nodes: set[MindMapNode]) -> tuple[dict[
 
 def _research_turn(topic: str, agent: dict, section: MindMapNode,
                    mm: MindMap, prof: dict, search_lang: str, output_lang: str,
-                   engine: SearchEngine, llm: LLM, ov: dict | None,
-                   log: Callable) -> dict:
+                   engine: SearchEngine, llm: LLM, llm_fast: LLM,
+                   ov: dict | None, log: Callable) -> dict:
     """One research turn: generate queries → search → draft section."""
     role = agent["role"]
     desc = agent.get("description", "")
@@ -521,7 +559,7 @@ def _research_turn(topic: str, agent: dict, section: MindMapNode,
     try:
         return _research_turn_inner(
             topic, role, desc, section, mm, prof, search_lang,
-            output_lang, engine, llm, ov, log)
+            output_lang, engine, llm, llm_fast, ov, log)
     except KeyboardInterrupt:
         raise
     except Exception as e:
@@ -534,14 +572,14 @@ def _research_turn(topic: str, agent: dict, section: MindMapNode,
 
 def _research_turn_inner(topic: str, role: str, desc: str, section: MindMapNode,
                          mm: MindMap, prof: dict, search_lang: str, output_lang: str,
-                         engine: SearchEngine, llm: LLM, ov: dict | None,
-                         log: Callable) -> dict:
+                         engine: SearchEngine, llm: LLM, llm_fast: LLM,
+                         ov: dict | None, log: Callable) -> dict:
     # 1. Build outline
     index_map, outline = _section_outline(mm, set())
 
     # 2. Generate search queries
     oq = ", ".join(section.open_questions) if section.open_questions else "(none)"
-    raw = llm(_get_prompt("RESEARCH_TURN", ov).format(
+    raw = llm_fast(_get_prompt("RESEARCH_TURN", ov).format(
         role=role, description=desc, topic=topic,
         outline=outline,
         section_name=section.name,
@@ -550,6 +588,7 @@ def _research_turn_inner(topic: str, role: str, desc: str, section: MindMapNode,
         n_sources=len(section.snippet_uuids),
         open_questions=oq,
         search_lang_instruction=search_lang,
+        max_queries=prof["max_queries"],
     ), response_format={"type": "json_object"})
     queries = _parse_json(raw, expect="object").get("queries", [])
     if not queries:
@@ -566,7 +605,7 @@ def _research_turn_inner(topic: str, role: str, desc: str, section: MindMapNode,
     raw_count = len(all_results)
     all_results = _filter_blocked_domains(all_results)
     all_results = _domain_diversify(all_results)
-    all_results = _filter_sources(all_results, topic, llm, ov)
+    all_results = _filter_sources(all_results, topic, llm_fast, ov)
     log(f"      search: {raw_count} raw → {len(all_results)} after filter")
 
     cited: set[int] = set()
@@ -621,7 +660,8 @@ def _research_turn_inner(topic: str, role: str, desc: str, section: MindMapNode,
 
 def _roundtable(topic: str, perspectives: list[dict], mm: MindMap,
                 prof: dict, search_lang: str, output_lang: str,
-                engine: SearchEngine, encoder: Encoder, llm: LLM,
+                engine: SearchEngine, encoder: Encoder,
+                llm: LLM, llm_fast: LLM,
                 ov: dict | None, log: Callable):
     """Roundtable: each expert researches and drafts assigned sections."""
     max_rounds = prof["max_rounds"]
@@ -654,7 +694,7 @@ def _roundtable(topic: str, perspectives: list[dict], mm: MindMap,
             futures = {
                 pool.submit(
                     _research_turn, topic, agent, section, mm, prof,
-                    search_lang, output_lang, engine, llm, ov, log,
+                    search_lang, output_lang, engine, llm, llm_fast, ov, log,
                 ): section.name
                 for agent, section in assignments
             }
@@ -664,7 +704,7 @@ def _roundtable(topic: str, perspectives: list[dict], mm: MindMap,
         # Apply results sequentially: insert snippets + restructures
         for turn in turns:
             if turn.get("results"):
-                inserted = _insert_turn_snippets(mm, turn, encoder, llm, ov)
+                inserted = _insert_turn_snippets(mm, turn, encoder, llm_fast, ov)
                 log(f"      +{inserted} snippets [{turn['section']}]")
             restructure = turn.get("restructure", [])
             if restructure:
@@ -739,7 +779,7 @@ def _section_sources_text(leaf: MindMapNode, mm: MindMap,
         if gid and gid not in seen and uid in mm.snippets:
             seen.add(gid)
             src = mm.snippets[uid].source
-            lines.append(f"[{gid}] {src.title}\n{src.content[:600]}")
+            lines.append(f"[{gid}] {src.title}\n{src.content[:2000]}")
     return "\n\n".join(lines)
 
 
@@ -781,7 +821,7 @@ def _tree_to_sections(nodes: list[MindMapNode],
 
 def _write_article(topic: str, mm: MindMap, st: dict, output_lang: str,
                    target_words: int, llm: LLM, ov: dict | None,
-                   log: Callable) -> Report:
+                   log: Callable) -> tuple[Report, dict]:
     """Transform research drafts into a polished article."""
     log("Writing article...")
 
@@ -789,7 +829,12 @@ def _write_article(topic: str, mm: MindMap, st: dict, output_lang: str,
     sources, uuid_to_global = _build_source_index(mm)
     leaves = mm.root.leaves()
     if not leaves:
-        return Report(topic=topic, sections=[], sources=sources)
+        return Report(topic=topic, sections=[], sources=sources), {}
+
+    # Enrich top sources with full page content
+    n_enriched = enrich_sources(sources)
+    if n_enriched:
+        log(f"  Enriched {n_enriched} sources with full page content")
 
     anti_patterns = _get_prompt("ANTI_PATTERNS", ov)
     prose_techniques = _get_prompt("PROSE_TECHNIQUES", ov)
@@ -947,7 +992,104 @@ def _write_article(topic: str, mm: MindMap, st: dict, output_lang: str,
     word_count = sum(len(s.content.split()) for s in sections)
     log(f"  Article: {word_count} words, {len(sections)} sections, {len(sources)} sources")
 
-    return Report(topic=topic, sections=sections, sources=sources)
+    write_meta = {
+        "narrative_thread": narrative_thread,
+        "leaf_words": leaf_words,
+        "uuid_to_global": uuid_to_global,
+    }
+    return Report(topic=topic, sections=sections, sources=sources), write_meta
+
+
+# ── Review & Patch ────────────────────────────────────────────────────────
+
+def _review_and_patch(report: Report, mm: MindMap, st: dict,
+                      narrative_thread: str, output_lang: str,
+                      leaf_words: dict[str, int],
+                      uuid_to_global: dict[int, int],
+                      llm_review: LLM, llm: LLM,
+                      ov: dict | None, log: Callable) -> Report:
+    """Review article with one model, patch flagged sections with another."""
+    anti_patterns = _get_prompt("ANTI_PATTERNS", ov)
+    prose_techniques = _get_prompt("PROSE_TECHNIQUES", ov)
+
+    article_text = "\n\n".join(
+        (f"## {s.title}\n{s.content}" if s.title else s.content)
+        for s in report.sections if s.content)
+
+    log("  Reviewing article...")
+    raw = llm_review(_get_prompt("REVIEW_ARTICLE", ov).format(
+        topic=report.topic,
+        style_tone=st.get("tone", ""),
+        style_techniques=st.get("techniques", ""),
+        anti_patterns=anti_patterns,
+        article_text=article_text,
+        output_lang_instruction=output_lang,
+    ), response_format={"type": "json_object"})
+    review = _parse_json(raw, expect="object").get("sections", [])
+
+    # Build critique lookup: title → critique text
+    critiques: dict[str, str] = {}
+    cuts: set[str] = set()
+    for item in review:
+        title = item.get("title", "")
+        action = item.get("action", "ok")
+        if action == "rewrite" and item.get("critique"):
+            critiques[title.lower().strip()] = item["critique"]
+        elif action == "cut":
+            cuts.add(title.lower().strip())
+
+    if not critiques and not cuts:
+        log("  Review: all sections OK")
+        return report
+
+    log(f"  Review: {len(critiques)} to rewrite, {len(cuts)} to cut")
+
+    # Cut sections
+    if cuts:
+        report.sections = [s for s in report.sections
+                           if s.title.lower().strip() not in cuts]
+
+    # Patch sections that need rewriting
+    patched = 0
+    prev_ending = ""
+    for section in report.sections:
+        key = section.title.lower().strip()
+        if key not in critiques:
+            if section.content:
+                prev_ending = section.content[-300:]
+            continue
+
+        log(f"  Patching [{section.title}]...")
+
+        # Find matching leaf for sources
+        leaves = mm.root.leaves()
+        leaf = next((l for l in leaves if l.name.lower().strip() == key), None)
+        src_text = _section_sources_text(leaf, mm, uuid_to_global) if leaf else ""
+
+        prev_context = (f"PREVIOUS SECTION ENDING:\n{prev_ending}"
+                        if prev_ending else "This is the first body section.")
+
+        text = llm(_get_prompt("PATCH_SECTION", ov).format(
+            narrative_thread=narrative_thread,
+            style_techniques=st.get("techniques", ""),
+            style_tone=st.get("tone", ""),
+            anti_patterns=anti_patterns,
+            prose_techniques=prose_techniques,
+            section_name=section.title,
+            current_text=section.content,
+            critique=critiques[key],
+            sources=src_text or "(no sources)",
+            prev_section_context=prev_context,
+            target_words=leaf_words.get(section.title, 400),
+            output_lang_instruction=output_lang,
+        ), max_tokens=4096).strip()
+
+        section.content = text
+        prev_ending = text[-300:]
+        patched += 1
+
+    log(f"  Patched {patched} sections")
+    return report
 
 
 # ── Initialization ───────────────────────────────────────────────────────
@@ -1042,7 +1184,7 @@ def _bootstrap(topic: str, findings: str, initial_sources: list[Source],
 
 def research(
     topic: str,
-    model: str = "anthropic/claude-sonnet-4-20250514",
+    model: str | dict[str, str] = "anthropic/claude-sonnet-4-20250514",
     embedding_model: str = "text-embedding-3-small",
     api_base: str | None = None,
     search: str | SearchEngine = "duckduckgo",
@@ -1061,9 +1203,10 @@ def research(
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
     trace = [] if save_trace else None
     _lock = threading.Lock()
-    llm: LLM = partial(_llm_call, model, api_base=api_base,
-                        _usage=usage, _usage_lock=_lock,
-                        _trace=trace, _trace_lock=_lock)
+    models = _resolve_models(model)
+    llm = _make_llm(models["default"], api_base, usage, _lock, trace)
+    llm_fast = _make_llm(models["fast"], api_base, usage, _lock, trace)
+    llm_review = _make_llm(models["review"], api_base, usage, _lock, trace)
 
     prof = PROFILES.get(profile, PROFILES["balanced"])
     st = STYLES.get(style, STYLES["analytical"])
@@ -1086,7 +1229,7 @@ def research(
         # Step 1: Decompose topic → search queries → initial findings
         log("Exploring topic...")
         findings, initial_sources = _decompose_and_search(
-            topic, engine, search_lang, prof, llm, ov, log)
+            topic, engine, search_lang, prof, llm_fast, ov, log)
 
         # Step 2: Bootstrap experts + outline from findings
         log("Bootstrapping roundtable...")
@@ -1095,10 +1238,20 @@ def research(
 
         # Step 3: Roundtable research
         _roundtable(topic, perspectives, mm, prof, search_lang, output_lang,
-                    engine, encoder, llm, ov, log)
+                    engine, encoder, llm, llm_fast, ov, log)
 
         # Write polished article
-        report = _write_article(topic, mm, st, output_lang, tw, llm, ov, log)
+        report, write_meta = _write_article(topic, mm, st, output_lang, tw, llm, ov, log)
+
+        # Review → Patch cycles (cross-model critique)
+        review_cycles = prof.get("review_cycles", 0)
+        for cycle in range(review_cycles):
+            log(f"Review cycle {cycle + 1}/{review_cycles}...")
+            report = _review_and_patch(
+                report, mm, st, write_meta.get("narrative_thread", topic),
+                output_lang, write_meta.get("leaf_words", {}),
+                write_meta.get("uuid_to_global", {}),
+                llm_review, llm, ov, log)
 
     except KeyboardInterrupt:
         log("\nInterrupted — returning partial results...")
