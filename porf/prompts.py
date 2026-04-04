@@ -167,6 +167,8 @@ AVOID these patterns (in whatever language you write):
 - Vague attribution: "experts say", "studies show" without specifics
 - Formulaic structure: bullet lists with bold headers inside prose sections
 - Bookend clichés: "In conclusion", "As we have seen", "In the realm of"
+- Unexplained jargon: dropping technical terms without plain-language explanation \
+(if the style is popular, skip the term entirely and just describe the idea)
 - Repetitive section endings: ending every section with a rhetorical question \
 (vary endings: some with images, some with statements, some with questions)
 - Monotonous section openings: using the same transition structure to bridge \
@@ -228,7 +230,12 @@ Tone: {style_tone}
 SECTION: {section_name}
 CLAIM: {section_claim}
 
-RESEARCH MATERIAL (use this as your factual foundation — do NOT invent facts):
+RESEARCH MATERIAL (factual foundation — do NOT invent facts, but do NOT copy
+the draft's language either. The draft is raw research full of jargon and
+academic terms. Your job is to RE-TELL these ideas in the tone and style above.
+Replace every piece of jargon with a plain explanation or a vivid analogy.
+If the draft says "ontological framework" write about what actually happens.
+If it names a theory, explain the idea without the label):
 {draft}
 
 SOURCES (cite as [N] inline):

@@ -160,19 +160,39 @@ STYLES = {
         "tone": "Measured, precise, authoritative but not pompous.",
     },
     "popular": {
-        "narrative": "Structure for general audience: open with a vivid scene or example, then progressively explore deeper layers.",
-        "techniques": (
-            "Open sections with a vivid scene, specific person, or surprising fact. "
-            "Use short paragraphs — one sentence is fine for emphasis. "
-            "Address the reader occasionally with rhetorical questions. "
-            "Mix irony or humor with serious analysis. "
-            "End sections with a forward-looking question or striking image. "
-            "If the research material references a theorist or theory, explain the idea "
-            "in plain language first — the reader shouldn't need prior knowledge. "
-            "Use names as color, not as argument from authority. "
-            "One theoretical reference per section maximum — pick the most illuminating, drop the rest."
+        "narrative": (
+            "Structure as a popular-science longread: open with a person, scene or "
+            "dramatic moment, then peel back layers — each section goes deeper but "
+            "stays accessible. Build narrative tension: pose a question early, delay "
+            "the answer. Use multiple viewpoints to enrich the story."
         ),
-        "tone": "Conversational, curious, accessible — like explaining to a smart friend.",
+        "techniques": (
+            "ZERO JARGON. The reader is a curious non-expert — a bank clerk, a "
+            "barista, a retired teacher. If a term wouldn't be obvious to them, "
+            "don't use it. Never write 'simulacra of the third order' — write "
+            "'copies that no longer have an original, like a photo of a photo of "
+            "a photo until nobody remembers what was real'. "
+            "Feynman rule: explain every idea as if the reader has zero background "
+            "but full intelligence. Use analogies from everyday life — kitchens, "
+            "traffic, sports, weather — not from other theories. "
+            "People over abstractions: anchor each section in a specific person, "
+            "place, or moment. 'In 2019, a team in Geneva...' beats 'Research shows...'. "
+            "Drama: create tension by showing what's at stake before explaining how "
+            "it works. Surprise the reader — counterintuitive facts, unexpected turns. "
+            "Short paragraphs. One-sentence paragraphs for punch. "
+            "Mix humor or irony with substance — but never be cute at the expense "
+            "of clarity. "
+            "Skip theorist names entirely unless the person IS the story. Never "
+            "write 'as Baudrillard argued' — just explain the idea in plain words. "
+            "One complex idea per section max. If the research draft has five "
+            "theories, pick the one that best serves the story, drop the rest."
+        ),
+        "tone": (
+            "Warm, curious, zero academic register. A science journalist at a "
+            "dinner party — smart, funny, makes you feel clever for following along. "
+            "The reader should think 'huh, I never knew that' not 'I need a PhD "
+            "to parse this sentence'."
+        ),
     },
     "journalistic": {
         "narrative": "Investigative long-form: lead with the most striking finding, build context, present multiple viewpoints, end with implications.",
