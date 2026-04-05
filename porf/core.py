@@ -49,7 +49,7 @@ def _llm_call(model: str, prompt: str, api_base: str | None = None,
               _trace: list | None = None, _trace_lock: threading.Lock | None = None,
               max_retries: int = 5, max_tokens: int | None = None,
               response_format: dict | None = None,
-              timeout: int = 120) -> str:
+              timeout: int = 300) -> str:
     kwargs = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
